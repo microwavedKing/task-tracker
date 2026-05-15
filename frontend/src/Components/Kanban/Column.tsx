@@ -1,6 +1,7 @@
 // src/components/Column.tsx
+import { useDroppable } from '@dnd-kit/core';
 import { type Task, type Column as ColumnType } from '../../types/task';
-import TaskCard from './TaskCard';
+import SortableTaskCard from './SortableTaskCard';
 
 interface ColumnProps {
   column: ColumnType;
@@ -10,6 +11,11 @@ interface ColumnProps {
 }
 
 const Column = ({ column, tasks, onEditTask, onDeleteTask }: ColumnProps) => {
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    data: { columnId: column.id },
+  });
+
   const priorityOrder = { high: 0, medium: 1, low: 2 };
   const sortedTasks = [...tasks].sort((a, b) => 
     priorityOrder[a.priority] - priorityOrder[b.priority]
@@ -21,9 +27,7 @@ const Column = ({ column, tasks, onEditTask, onDeleteTask }: ColumnProps) => {
       <div className={`${column.bgColor} rounded-t-lg border-t-4 ${column.borderColor} p-3`}>
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold text-gray-800">
-              {column.title}
-            </h3>
+            <h3 className="font-semibold text-gray-800">{column.title}</h3>
             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
               column.id === 'todo' ? 'bg-blue-100 text-blue-700' :
               column.id === 'in-progress' ? 'bg-yellow-100 text-yellow-700' :
@@ -40,13 +44,19 @@ const Column = ({ column, tasks, onEditTask, onDeleteTask }: ColumnProps) => {
         </div>
       </div>
 
-      {/* Список задач */}
-      <div className={`${column.bgColor} rounded-b-lg p-3 min-h-[600px]`}>
+      {/* Тело колонки (принимающая зона) */}
+      <div
+        ref={setNodeRef}
+        className={`${column.bgColor} rounded-b-lg p-3 min-h-[600px] transition-colors ${
+          isOver ? 'ring-2 ring-blue-400 ring-inset bg-blue-100 bg-opacity-30' : ''
+        }`}
+      >
         <div className="space-y-3">
           {sortedTasks.map((task) => (
-            <TaskCard
+            <SortableTaskCard
               key={task.id}
               task={task}
+              columnId={column.id}
               onEdit={() => onEditTask(task)}
               onDelete={() => onDeleteTask(task.id)}
             />
