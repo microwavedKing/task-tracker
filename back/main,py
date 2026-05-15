@@ -1,0 +1,105 @@
+from typing import List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from sqlmodel import SQLModel, Session, create_engine, select
+from contextlib import asynccontextmanager
+
+from models import Task, TaskCreate, TaskPublic
+
+# 1. Настройка Базы Данных (SQLite в памяти для скорости)
+sqlite_url = "sqlite:///./tasks.db"
+connect_args = {"check_same_thread": False}
+engine = create_engine(sqlite_url, connect_args=connect_args)
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
+
+# 2. Инициализация приложения
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_db_and_tables()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+# --- API ENDPOINTS ---
+
+# Получить все задачи
+@app.get("/tasks", response_model=List[TaskPublic])
+def get_tasks():
+    with Session(engine) as session:
+        statement = select(Task)
+        tasks = session.exec(statement).all()
+        return tasks
+
+# Создать задачу
+@app.post("/tasks", response_model=TaskPublic, status_code=201)
+def create_task(task: TaskCreate):
+    with Session(engine) as session:
+        db_task = Task.from_orm(task)
+        session.add(db_task)
+        session.commit()
+        session.refresh(db_task)
+        
+        # 🔥 REAL-TIME: Сообщаем всем, что задача создана
+        # Превращаем в JSON строку для отправки
+        # (в реальном проекте лучше использовать Pydantic model_dump)
+        import json
+        task_data = task.model_dump()
+        task_data["id"] = db_task.id # Добавляем ID
+        manager.broadcast(json.dumps({"event": "task.created", "data": task_data}))
+        
+        return db_task
+
+# Обновить задачу (например, переместить в другую колонку)
+@app.put("/tasks/{task_id}", response_model=TaskPublic)
+def update_task(task_id: int, task: TaskCreate):
+    with Session(engine) as session:
+        db_task = session.get(Task, task_id)
+        if not db_task:
+            return JSONResponse(status_code=404, content={"message": "Task not found"})
+        
+        # Обновляем поля
+        db_task.title = task.title
+        db_task.status = task.status
+        db_task.priority = task.priority
+        # ... остальные поля
+        
+        session.add(db_task)
+        session.commit()
+        session.refresh(db_task)
+
+        # 🔥 REAL-TIME: Сообщаем об обновлении
+        import json
+        manager.broadcast(json.dumps({"event": "task.updated", "data": db_task.model_dump()}))
+        
+        return db_task
+
+# --- WEBSOCKET ENDPOINT ---
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Просто слушаем, чтобы соединение не разрывалось
+            # Можно добавить логику: клиент отправляет "ping", сервер "pong"
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
